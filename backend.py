@@ -11,28 +11,17 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.vectorstores import Chroma
-from langchain_community.llms import Ollama
-
-# Try importing sentence transformers for free embeddings
-try:
-    from langchain_community.embeddings import HuggingFaceEmbeddings
-    HUGGINGFACE_AVAILABLE = True
-except ImportError:
-    HUGGINGFACE_AVAILABLE = False
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 import fitz  # PyMuPDF
 from unstructured.partition.auto import partition
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 
-# Try importing Google Gemini for cloud deployment
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-    GEMINI_AVAILABLE = True
-except ImportError:
-    GEMINI_AVAILABLE = False
+LLM_MODEL = os.getenv("GEMINI_MODEL", "gemini-pro")
+EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "models/embedding-001")
+DEFAULT_TEMPERATURE = float(os.getenv("GEMINI_TEMPERATURE", "0.1"))
 
 
 class TestCase(BaseModel):
@@ -62,42 +51,24 @@ class QAAgentBackend:
             length_function=len,
         )
         
-        # Check for LLM provider from environment variable
-        llm_provider = os.getenv("LLM_PROVIDER", "ollama").lower()
         google_api_key = os.getenv("GOOGLE_API_KEY")
-        
-        # Initialize embeddings and LLM based on provider
-        if llm_provider == "gemini" and GEMINI_AVAILABLE and google_api_key:
-            # Use hybrid approach: Free embeddings + Gemini LLM
-            try:
-                # Use HuggingFace embeddings (free, no API key, no quota)
-                if HUGGINGFACE_AVAILABLE:
-                    self.embeddings = HuggingFaceEmbeddings(
-                        model_name="sentence-transformers/all-MiniLM-L6-v2"
-                    )
-                    print("Using HuggingFace embeddings (free)")
-                else:
-                    # Fallback to Ollama if HuggingFace not available
-                    self.embeddings = OllamaEmbeddings(model="phi3")
-                    print("Using Ollama embeddings (local)")
-                
-                # Use Gemini only for LLM generation
-                self.llm = ChatGoogleGenerativeAI(
-                    google_api_key=google_api_key,
-                    temperature=0.1,
-                    model=os.getenv("GEMINI_MODEL", "gemini-pro")
-                )
-                print("Using Gemini LLM for text generation")
-            except Exception as e:
-                print(f"Error initializing Gemini LLM: {e}")
-                print("Falling back to full Ollama")
-                self.embeddings = OllamaEmbeddings(model="phi3")
-                self.llm = Ollama(model="phi3", temperature=0.1)
-        else:
-            # Use Ollama for local development (default)
-            self.embeddings = OllamaEmbeddings(model="phi3")
-            self.llm = Ollama(model="phi3", temperature=0.1)
-            print("Using Ollama LLM (local)")
+        if not google_api_key:
+            raise ValueError(
+                "GOOGLE_API_KEY environment variable is required for Gemini integration."
+            )
+
+        try:
+            self.embeddings = GoogleGenerativeAIEmbeddings(
+                model=EMBEDDING_MODEL,
+                google_api_key=google_api_key,
+            )
+            self.llm = ChatGoogleGenerativeAI(
+                google_api_key=google_api_key,
+                temperature=DEFAULT_TEMPERATURE,
+                model=LLM_MODEL,
+            )
+        except Exception as exc:
+            raise RuntimeError("Failed to initialize Gemini models.") from exc
         
         self.persist_directory = "./chroma_db"
         
