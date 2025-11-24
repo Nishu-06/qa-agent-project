@@ -5,8 +5,10 @@ import streamlit as st
 import streamlit.components.v1 as components
 import os
 import json
-from pathlib import Path
-from backend import QAAgentBackend
+import base64
+import requests
+
+BACKEND_URL = "http://16.171.153.209:8000"
 
 # Page configuration
 st.set_page_config(
@@ -655,12 +657,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Initialize session state
-if 'backend' not in st.session_state:
-    st.session_state.backend = QAAgentBackend()
 if 'knowledge_base_built' not in st.session_state:
     st.session_state.knowledge_base_built = False
 if 'generated_test_cases' not in st.session_state:
     st.session_state.generated_test_cases = []
+if 'html_content' not in st.session_state:
+    st.session_state.html_content = ""
 
 # Custom Header
 st.markdown("""
@@ -720,9 +722,6 @@ with col3:
     """, unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
-
-# Initialize backend
-backend = st.session_state.backend
 
 # ============================================================================
 # PHASE 1: Knowledge Ingestion
@@ -809,43 +808,50 @@ with col2:
             else:
                 try:
                     with st.spinner("Building knowledge base... This may take a moment."):
-                        # Save uploaded files temporarily
-                        support_docs_paths = []
-                        temp_dir = Path("./temp_uploads")
-                        temp_dir.mkdir(exist_ok=True)
-                        
+                        documents_payload = []
                         for uploaded_file in uploaded_files:
-                            file_path = temp_dir / uploaded_file.name
-                            with open(file_path, "wb") as f:
-                                f.write(uploaded_file.getbuffer())
-                            support_docs_paths.append(str(file_path))
+                            file_bytes = uploaded_file.getvalue()
+                            encoded_content = base64.b64encode(file_bytes).decode("utf-8")
+                            documents_payload.append({
+                                "filename": uploaded_file.name,
+                                "content": encoded_content,
+                                "encoding": "base64",
+                                "mime_type": uploaded_file.type or "application/octet-stream"
+                            })
                         
-                        # If no files uploaded but HTML provided, still proceed
-                        if not support_docs_paths and html_content:
+                        if not documents_payload and html_content:
                             st.warning("No support documents uploaded. Only HTML content will be stored.")
                         
-                        # Call backend ingestion with error handling
+                        payload = {
+                            "documents": documents_payload,
+                            "html_content": html_content
+                        }
+                        
                         try:
-                            result = backend.ingest_documents(support_docs_paths, html_content)
+                            response = requests.post(
+                                f"{BACKEND_URL}/ingest",
+                                json=payload,
+                                timeout=120,
+                            )
+                            if response.status_code != 200:
+                                raise ValueError(response.text or "Backend ingestion failed.")
+                            result = response.json()
                             
-                            # Display result
-                            if result["status"] == "success":
+                            if result.get("status") == "success":
                                 st.balloons()  # Celebration animation
                                 st.session_state.knowledge_base_built = True
+                                st.session_state.html_content = html_content
                                 
-                                # Show success message
-                                st.success(f"{result['message']}")
+                                st.success(f"{result.get('message', 'Knowledge Base Built Successfully.')}")
                                 
-                                # Show statistics in columns
                                 stat_col1, stat_col2 = st.columns(2)
-                                if support_docs_paths:
+                                if documents_payload:
                                     with stat_col1:
-                                        st.metric("Documents Processed", len(support_docs_paths))
+                                        st.metric("Documents Processed", len(documents_payload))
                                 if html_content:
                                     with stat_col2:
                                         st.metric("HTML Content Size", f"{len(html_content):,} chars")
                                 
-                                # Success message banner
                                 st.markdown("<br>", unsafe_allow_html=True)
                                 st.markdown("""
                                 <div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 2rem; border-radius: 15px; color: white; text-align: center; margin: 2rem 0; box-shadow: 0 10px 30px rgba(240, 147, 251, 0.3);">
@@ -857,19 +863,15 @@ with col2:
                                 """, unsafe_allow_html=True)
                                 st.rerun()
                             else:
-                                st.error(f"{result['message']}")
+                                st.error(result.get("message", "Failed to build knowledge base."))
                                 st.session_state.knowledge_base_built = False
+                        except requests.exceptions.RequestException as req_err:
+                            st.error(f"Network error while contacting backend: {req_err}")
+                            st.session_state.knowledge_base_built = False
                         except Exception as e:
                             st.error(f"Error building knowledge base: {str(e)}")
                             st.session_state.knowledge_base_built = False
                             st.exception(e)  # Show full traceback for debugging
-                        
-                        # Clean up temporary files
-                        for file_path in support_docs_paths:
-                            try:
-                                os.remove(file_path)
-                            except:
-                                pass
                 except Exception as e:
                     st.error(f"Unexpected error: {str(e)}")
                     st.exception(e)
@@ -944,7 +946,8 @@ if st.session_state.knowledge_base_built:
             )
         
         # HTML Preview Section
-        if backend.html_content:
+        html_preview_content = st.session_state.html_content
+        if html_preview_content:
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown('<h3 style="color: #000000; font-weight: 700;">HTML Preview</h3>', unsafe_allow_html=True)
             st.markdown('<p style="color: #000000;">Preview the loaded HTML content to inspect the page structure before generating tests.</p>', unsafe_allow_html=True)
@@ -952,7 +955,7 @@ if st.session_state.knowledge_base_built:
             # Display HTML in an iframe
             st.markdown('<div class="html-preview-container">', unsafe_allow_html=True)
             components.html(
-                backend.html_content,
+                html_preview_content,
                 height=400,
                 scrolling=True
             )
@@ -967,7 +970,14 @@ if st.session_state.knowledge_base_built:
             else:
                 try:
                     with st.spinner("Generating test cases using RAG pipeline... This may take a moment."):
-                        result = backend.generate_test_cases(user_prompt)
+                        response = requests.post(
+                            f"{BACKEND_URL}/generate",
+                            json={"prompt": user_prompt},
+                            timeout=120,
+                        )
+                        if response.status_code != 200:
+                            raise ValueError(response.text or "Backend test case generation failed.")
+                        result = response.json()
                         
                         if result["status"] == "success":
                             st.balloons()  # Celebration animation
@@ -1032,6 +1042,8 @@ if st.session_state.knowledge_base_built:
                             if "raw_response" in result:
                                 with st.expander("View Raw Response"):
                                     st.text(result["raw_response"])
+                except requests.exceptions.RequestException as req_err:
+                    st.error(f"Network error while generating test cases: {req_err}")
                 except Exception as e:
                     st.error(f"Error generating test cases: {str(e)}")
                     st.exception(e)  # Show full traceback for debugging
@@ -1148,7 +1160,14 @@ if st.session_state.generated_test_cases:
     if st.button("Generate Selenium Script", type="primary", use_container_width=True):
         try:
             with st.spinner("Generating Selenium script... This may take a moment."):
-                result = backend.generate_selenium_script(selected_test_case)
+                response = requests.post(
+                    f"{BACKEND_URL}/generate_script",
+                    json={"test_case": selected_test_case},
+                    timeout=120,
+                )
+                if response.status_code != 200:
+                    raise ValueError(response.text or "Backend script generation failed.")
+                result = response.json()
                 
                 if result["status"] == "success":
                     st.balloons()  # Celebration animation
@@ -1196,6 +1215,8 @@ if st.session_state.generated_test_cases:
                     if "script" in result and result["script"]:
                         with st.expander("View Partial Script"):
                             st.code(result["script"], language="python")
+        except requests.exceptions.RequestException as req_err:
+            st.error(f"Network error while generating Selenium script: {req_err}")
         except Exception as e:
             st.error(f"Error generating Selenium script: {str(e)}")
             st.exception(e)  # Show full traceback for debugging
