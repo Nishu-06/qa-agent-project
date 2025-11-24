@@ -7,5 +7,3 @@ pymupdf>=1.23.0
 chromadb>=0.4.15
 ollama>=0.1.0
 python-dotenv>=1.0.0
-sentence-transformers>=2.2.0
-
