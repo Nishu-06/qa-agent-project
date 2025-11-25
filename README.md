@@ -11,6 +11,7 @@ The QA Agent operates in three phases:
 3. **Selenium Script Generation** - Converts generated test cases into production-ready, executable Python Selenium automation scripts
 
 ## **Live Demo:** [View Deployed App Here](https://qa-agent-project-1.onrender.com)
+## **Screenshots:** [View Project Screenshots](https://drive.google.com/file/d/14-heFY-2y9grSJudbTwT0R1jUIc1GMy-/view?usp=sharing)
 
 ## Setup Instructions
 
@@ -144,7 +145,7 @@ The QA Agent follows a three-phase workflow. Follow these steps to generate test
 
 1. **Navigate to Phase 2 Section:**
    - Ensure Phase 1 is completed (knowledge base is built)
-   - Scroll to the "🧪 Phase 2: Test Case Generation" section
+   - Scroll to the "Phase 2: Test Case Generation" section
 
 2. **Enter Test Case Generation Prompt:**
    - Option 1: Use the default AI-optimized prompt (checkbox enabled)
