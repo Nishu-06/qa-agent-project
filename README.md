@@ -25,12 +25,14 @@ python --version
 All required dependencies are listed in `requirements.txt`:
 
 - `streamlit>=1.28.0` - Web UI framework
-- `langchain-community>=0.0.20` - LangChain community integrations
 - `langchain>=0.1.0` - LangChain core library
+- `langchain-core>=0.1.0` - LangChain core components
+- `langchain-community>=0.0.20` - LangChain community integrations
+- `langchain-openai>=0.1.0` - OpenAI integration for LangChain
+- `openai>=1.0.0` - OpenAI Python SDK
 - `unstructured>=0.10.30` - Document parsing
 - `pymupdf>=1.23.0` - PDF parsing
 - `chromadb>=0.4.15` - Vector database
-- `ollama>=0.1.0` - Ollama LLM integration
 - `python-dotenv>=1.0.0` - Environment variable management
 
 ### Virtual Environment Setup
@@ -59,12 +61,22 @@ pip install -r requirements.txt
 
 ### Additional Requirements
 
-**Ollama Setup:**
-- Install Ollama from https://ollama.ai
-- Ensure Ollama is running before using the application
-- Pull the required model: `ollama pull phi3`
+**OpenAI API Key Setup:**
+- Get your OpenAI API key from https://platform.openai.com/api-keys
+- Create a `.env` file in the project root directory
+- Add your API key to the `.env` file:
+  ```
+  OPENAI_API_KEY=your_api_key_here
+  ```
+- Optional: You can also set custom models:
+  ```
+  OPENAI_LLM_MODEL=gpt-4o-mini
+  OPENAI_EMBED_MODEL=text-embedding-3-small
+  ```
 
 ## How to Run
+
+### Local Development
 
 Start the Streamlit application:
 
@@ -73,6 +85,21 @@ streamlit run app.py
 ```
 
 The application will launch in your default web browser at `http://localhost:8501`.
+
+### Deployment (Render)
+
+The application is fully deployable on Render or similar cloud platforms:
+
+1. **Connect your GitHub repository** to Render
+2. **Create a new Web Service** with the following settings:
+   - Build Command: `pip install -r requirements.txt`
+   - Start Command: `streamlit run app.py --server.port $PORT --server.address 0.0.0.0`
+3. **Set Environment Variables** in Render dashboard:
+   - `OPENAI_API_KEY`: Your OpenAI API key
+   - Optional: `OPENAI_LLM_MODEL` and `OPENAI_EMBED_MODEL`
+4. **Deploy**: Render will automatically build and deploy your application
+
+The app will be accessible at your Render-provided URL.
 
 ## Usage Examples (Workflow)
 
@@ -103,7 +130,7 @@ The QA Agent follows a three-phase workflow. Follow these steps to generate test
 
 **What Happens:**
 - Documents are parsed and chunked into manageable pieces
-- Text embeddings are generated using Ollama
+- Text embeddings are generated using OpenAI's embedding models
 - Content is stored in ChromaDB vector database with metadata
 - HTML content is stored for Phase 3 script generation
 
@@ -246,7 +273,7 @@ The QA Agent leverages several key technologies:
 - **LangChain**: Framework for building LLM applications, providing RAG pipeline components, document loaders, and chain orchestration
 - **RAG (Retrieval-Augmented Generation)**: Technique that retrieves relevant document chunks before generating responses, ensuring test cases are grounded in documentation
 - **ChromaDB**: Vector database that stores document embeddings, enabling semantic search and retrieval of relevant context
-- **Ollama**: Local LLM inference engine providing embeddings (phi3 model) and text generation capabilities
+- **OpenAI API**: Cloud-based LLM and embedding services providing text generation (GPT models) and embeddings (text-embedding-3-small)
 - **Streamlit**: Web framework for building the interactive user interface
 - **Unstructured & PyMuPDF**: Document parsing libraries for extracting text from various file formats (PDF, DOCX, etc.)
 
@@ -266,22 +293,31 @@ qa_agent_project/
 
 ## Notes
 
-- **Ollama Requirement**: Ensure Ollama is installed and running before using the application
-- **Model**: The system uses the `phi3` model by default (ensure it's pulled: `ollama pull phi3`)
+- **OpenAI API Key**: Required for both LLM inference and embeddings. Get your key from https://platform.openai.com/api-keys
+- **Default Models**: 
+  - LLM: `gpt-4o-mini` (fast and cost-effective)
+  - Embeddings: `text-embedding-3-small` (768 dimensions)
 - **Vector Database**: Stored in `./chroma_db/` directory (automatically created)
 - **Temporary Files**: Uploaded files are temporarily stored in `./temp_uploads/` and cleaned up after processing
 - **Knowledge Grounding**: All test cases include a "Grounded_In" field referencing source documents to ensure no hallucinations
+- **Deployment**: Fully deployable on Render or similar cloud platforms. Set `OPENAI_API_KEY` as an environment variable in your deployment settings
 
 ## Troubleshooting
 
-**Issue**: "Model phi3 not found"  
-**Solution**: Run `ollama pull phi3` to download the model
+**Issue**: "OPENAI_API_KEY environment variable is required"  
+**Solution**: Create a `.env` file in the project root and add `OPENAI_API_KEY=your_key_here`, or set it as an environment variable
 
 **Issue**: "Knowledge base not found"  
 **Solution**: Complete Phase 1 first by building the knowledge base
 
+**Issue**: "Error building knowledge base: Collection expecting embedding with dimension..."  
+**Solution**: Delete the `./chroma_db/` directory and rebuild the knowledge base. This happens when switching embedding models
+
 **Issue**: Selenium script doesn't run  
 **Solution**: Install dependencies (`pip install selenium webdriver-manager`) and update the HTML file path in the script
+
+**Issue**: API quota exceeded  
+**Solution**: Check your OpenAI account usage and billing. Consider upgrading your plan or using rate limiting
 
 ---
 
