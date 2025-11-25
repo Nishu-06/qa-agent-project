@@ -17,8 +17,7 @@ from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 import fitz  # PyMuPDF
 from unstructured.partition.auto import partition
-from langchain_groq import ChatGroq
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 
 class TestCase(BaseModel):
@@ -27,6 +26,7 @@ class TestCase(BaseModel):
     Feature: str = Field(description="The feature being tested, e.g., Discount Code.")
     Test_Scenario: str = Field(description="The specific steps and inputs for the test.")
     Expected_Result: str = Field(description="The outcome expected based on documentation.")
+    Triggering_Rule: str = Field(description="Specific rule, requirement, or trigger condition covered by this test.")
     Grounded_In: str = Field(description="The source document(s) used for reasoning, e.g., product_specs.md, checkout.html.")
 
 
@@ -48,34 +48,54 @@ class QAAgentBackend:
             length_function=len,
         )
         
-        # Initialize HuggingFace embeddings (free, no API quota)
-        try:
-            self.embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2"
-            )
-            print("Using HuggingFace embeddings (free, no API quota)")
-        except Exception as e:
-            raise RuntimeError(f"Failed to initialize HuggingFace embeddings: {str(e)}") from e
-        
-        # Initialize Groq LLM
-        groq_api_key = os.getenv("GROQ_API_KEY")
-        if not groq_api_key:
+        # Configure OpenAI API
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
             raise ValueError(
-                "GROQ_API_KEY environment variable is required for Groq integration."
+                "OPENAI_API_KEY environment variable is required for OpenAI integration."
             )
-        
-        try:
-            self.llm = ChatGroq(
-                model="llama-3.1-8b-instant",
-                temperature=0.1,
-                groq_api_key=groq_api_key,
-            )
-            print("Using Groq LLM (llama-3.1-8b-instant)")
-        except Exception as exc:
-            raise RuntimeError("Failed to initialize Groq LLM. Check your API key.") from exc
-        
+
+        embed_model = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+        llm_model = os.getenv("OPENAI_LLM_MODEL", "gpt-4o-mini")
         self.persist_directory = "./chroma_db"
+
+        # Initialize OpenAI embeddings
+        try:
+            self.embeddings = OpenAIEmbeddings(
+                model=embed_model,
+                openai_api_key=openai_api_key,
+            )
+            print(f"Using OpenAI embeddings ({embed_model})")
+        except Exception as exc:
+            raise RuntimeError("Failed to initialize OpenAI embeddings.") from exc
         
+        # Initialize OpenAI LLM
+        try:
+            self.llm = ChatOpenAI(
+                model=llm_model,
+                temperature=0.1,
+                openai_api_key=openai_api_key,
+            )
+            print(f"Using OpenAI LLM ({llm_model})")
+        except Exception as exc:
+            raise RuntimeError("Failed to initialize OpenAI LLM. Check your API key and model name.") from exc
+        
+    def _run_llm(self, prompt: str) -> str:
+        """Invoke OpenAI model and return plain text."""
+        try:
+            response = self.llm.invoke(prompt)
+            if isinstance(response, str):
+                return response
+            # Extract content from LangChain message object
+            if hasattr(response, 'content'):
+                return response.content
+            elif hasattr(response, 'text'):
+                return response.text
+            else:
+                return str(response)
+        except Exception as exc:
+            raise RuntimeError(f"OpenAI generation failed: {exc}") from exc
+    
     def _parse_document(self, file_path: str) -> str:
         """
         Parse a document based on its file extension.
@@ -165,19 +185,12 @@ class QAAgentBackend:
                 for i, chunk in enumerate(chunks)
             ]
             
-            # Create or get Chroma vector store using LangChain
-            # This will handle persistence automatically
+            # Ensure previous ChromaDB data is removed to prevent dimension mismatches
             if os.path.exists(self.persist_directory):
-                # Load existing vector store
-                self.vector_store = Chroma(
-                    persist_directory=self.persist_directory,
-                    embedding_function=self.embeddings,
-                )
-                # Clear existing data by recreating
                 import shutil
                 shutil.rmtree(self.persist_directory, ignore_errors=True)
             
-            # Create new vector store
+            # Create new vector store with current embeddings
             self.vector_store = Chroma.from_documents(
                 documents=documents,
                 embedding=self.embeddings,
@@ -304,10 +317,22 @@ class QAAgentBackend:
             if self.vector_store is None:
                 # Try to load existing vector store
                 if os.path.exists(self.persist_directory):
-                    self.vector_store = Chroma(
-                        persist_directory=self.persist_directory,
-                        embedding_function=self.embeddings,
-                    )
+                    try:
+                        self.vector_store = Chroma(
+                            persist_directory=self.persist_directory,
+                            embedding_function=self.embeddings,
+                        )
+                    except Exception as load_err:
+                        error_msg = str(load_err).lower()
+                        if "dimension" in error_msg or "embedding" in error_msg:
+                            import shutil
+                            shutil.rmtree(self.persist_directory, ignore_errors=True)
+                            return {
+                                "status": "error",
+                                "message": "Knowledge base embeddings are outdated. Please rebuild the knowledge base (Phase 1).",
+                                "test_cases": []
+                            }
+                        raise
                 else:
                     return {
                         "status": "error",
@@ -354,6 +379,7 @@ class QAAgentBackend:
    - The Feature being tested
    - Detailed Test_Scenario with specific steps and inputs
    - Expected_Result based on the documentation
+   - Triggering_Rule: The exact business rule, validation, or requirement enforced by this test
    - Grounded_In: List the source document(s) used (e.g., product_specs.md, checkout.html)
 
 5. Output ONLY valid JSON in the following format. CRITICAL: The output must be valid JSON that can be parsed directly:
@@ -364,6 +390,7 @@ class QAAgentBackend:
       "Feature": "Discount Code Application",
       "Test_Scenario": "Step 1: Navigate to checkout page. Step 2: Enter discount code SAVE15 in the discount code field. Step 3: Click Apply button.",
       "Expected_Result": "Discount of 15% should be applied to the subtotal. Discount amount should be displayed in the cart summary. Total should be updated to reflect the discount.",
+      "Triggering_Rule": "SAVE15 requires case-sensitive exact match and applies 15% off subtotal",
       "Grounded_In": "product_specs.md - SAVE15 Discount Code section"
     }}
   ]
@@ -418,14 +445,8 @@ Generate the test cases now:"""
                 html_content=html_context
             )
             
-            # Invoke the LLM
-            llm_response = self.llm.invoke(formatted_prompt)
-            
-            # Handle response (could be string or object)
-            if isinstance(llm_response, str):
-                response = llm_response
-            else:
-                response = str(llm_response)
+            # Invoke Gemini
+            response = self._run_llm(formatted_prompt)
             
             # Parse JSON from response with multiple fallback strategies
             try:
@@ -442,6 +463,7 @@ Generate the test cases now:"""
                 scenario_pattern = r'Test_Scenario["\']?\s*[:=]\s*["\']?([^"\',}\n]+)'
                 expected_pattern = r'Expected_Result["\']?\s*[:=]\s*["\']?([^"\',}\n]+)'
                 grounded_pattern = r'Grounded_In["\']?\s*[:=]\s*["\']?([^"\',}\n]+)'
+                trigger_pattern = r'Triggering_Rule["\']?\s*[:=]\s*["\']?([^"\',}\n]+)'
                 
                 # Split response into potential test case sections
                 sections = re.split(r'Test_ID|TC-\d+', response, flags=re.IGNORECASE)
@@ -453,6 +475,7 @@ Generate the test cases now:"""
                         scenario_match = re.search(scenario_pattern, section, re.IGNORECASE | re.DOTALL)
                         expected_match = re.search(expected_pattern, section, re.IGNORECASE | re.DOTALL)
                         grounded_match = re.search(grounded_pattern, section, re.IGNORECASE)
+                        trigger_match = re.search(trigger_pattern, section, re.IGNORECASE)
                         
                         if test_id_match or feature_match:
                             tc = {
@@ -460,6 +483,7 @@ Generate the test cases now:"""
                                 "Feature": feature_match.group(1).strip() if feature_match else "Unknown Feature",
                                 "Test_Scenario": scenario_match.group(1).strip() if scenario_match else "See raw response",
                                 "Expected_Result": expected_match.group(1).strip() if expected_match else "See raw response",
+                                "Triggering_Rule": trigger_match.group(1).strip() if trigger_match else "Not specified",
                                 "Grounded_In": grounded_match.group(1).strip() if grounded_match else "Unknown"
                             }
                             test_cases.append(tc)
@@ -520,10 +544,22 @@ Generate the test cases now:"""
             if self.vector_store is None:
                 # Try to load existing vector store
                 if os.path.exists(self.persist_directory):
-                    self.vector_store = Chroma(
-                        persist_directory=self.persist_directory,
-                        embedding_function=self.embeddings,
-                    )
+                    try:
+                        self.vector_store = Chroma(
+                            persist_directory=self.persist_directory,
+                            embedding_function=self.embeddings,
+                        )
+                    except Exception as load_err:
+                        error_msg = str(load_err).lower()
+                        if "dimension" in error_msg or "embedding" in error_msg:
+                            import shutil
+                            shutil.rmtree(self.persist_directory, ignore_errors=True)
+                            return {
+                                "status": "error",
+                                "message": "Knowledge base embeddings are outdated. Please rebuild the knowledge base (Phase 1).",
+                                "script": ""
+                            }
+                        raise
                 else:
                     return {
                         "status": "error",
@@ -682,20 +718,8 @@ Generate the complete Selenium script now:"""
                 documentation_context=documentation_context
             )
             
-            # Invoke the LLM to generate the script
-            llm_response = self.llm.invoke(formatted_prompt)
-            
-            # Handle response (could be string or LangChain message object)
-            if isinstance(llm_response, str):
-                script = llm_response
-            else:
-                # Extract content from LangChain message object
-                if hasattr(llm_response, 'content'):
-                    script = llm_response.content
-                elif hasattr(llm_response, 'text'):
-                    script = llm_response.text
-                else:
-                    script = str(llm_response)
+            # Invoke Gemini to generate the script
+            script = self._run_llm(formatted_prompt)
             
             # Convert literal \n to actual newlines
             script = script.replace('\\n', '\n')
