@@ -10,6 +10,8 @@ The QA Agent operates in three phases:
 2. **Test Case Generation** - Uses RAG (Retrieval-Augmented Generation) to create structured test cases grounded in the provided documentation
 3. **Selenium Script Generation** - Converts generated test cases into production-ready, executable Python Selenium automation scripts
 
+## **Live Demo:** [View Deployed App Here](https://qa-agent-project-1.onrender.com)
+
 ## Setup Instructions
 
 ### Python Version
