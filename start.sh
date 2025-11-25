@@ -1,6 +1,4 @@
 #!/bin/bash
-# Start FastAPI backend
-python backend.py &
-# Start Streamlit frontend
-streamlit run app.py --server.port $PORT --server.address 0.0.0.0
+# Start Streamlit frontend (backend.py is imported as a module, not run separately)
+streamlit run app.py --server.port ${PORT:-8501} --server.address 0.0.0.0
 

@@ -23,6 +23,7 @@ chroma_db/
 
 # Temporary files
 temp_uploads/
+uploads/
 *.tmp
 *.log
 

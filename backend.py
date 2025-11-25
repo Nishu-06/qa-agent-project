@@ -17,11 +17,8 @@ from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 import fitz  # PyMuPDF
 from unstructured.partition.auto import partition
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-
-LLM_MODEL = os.getenv("GEMINI_MODEL", "gemini-pro")
-EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "models/embedding-001")
-DEFAULT_TEMPERATURE = float(os.getenv("GEMINI_TEMPERATURE", "0.1"))
+from langchain_groq import ChatGroq
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
 
 class TestCase(BaseModel):
@@ -51,24 +48,31 @@ class QAAgentBackend:
             length_function=len,
         )
         
-        google_api_key = os.getenv("GOOGLE_API_KEY")
-        if not google_api_key:
-            raise ValueError(
-                "GOOGLE_API_KEY environment variable is required for Gemini integration."
-            )
-
+        # Initialize HuggingFace embeddings (free, no API quota)
         try:
-            self.embeddings = GoogleGenerativeAIEmbeddings(
-                model=EMBEDDING_MODEL,
-                google_api_key=google_api_key,
+            self.embeddings = HuggingFaceEmbeddings(
+                model_name="sentence-transformers/all-MiniLM-L6-v2"
             )
-            self.llm = ChatGoogleGenerativeAI(
-                google_api_key=google_api_key,
-                temperature=DEFAULT_TEMPERATURE,
-                model=LLM_MODEL,
+            print("Using HuggingFace embeddings (free, no API quota)")
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize HuggingFace embeddings: {str(e)}") from e
+        
+        # Initialize Groq LLM
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        if not groq_api_key:
+            raise ValueError(
+                "GROQ_API_KEY environment variable is required for Groq integration."
             )
+        
+        try:
+            self.llm = ChatGroq(
+                model="llama-3.1-8b-instant",
+                temperature=0.1,
+                groq_api_key=groq_api_key,
+            )
+            print("Using Groq LLM (llama-3.1-8b-instant)")
         except Exception as exc:
-            raise RuntimeError("Failed to initialize Gemini models.") from exc
+            raise RuntimeError("Failed to initialize Groq LLM. Check your API key.") from exc
         
         self.persist_directory = "./chroma_db"
         
@@ -127,8 +131,8 @@ class QAAgentBackend:
             Dictionary with status and message
         """
         try:
-            # Store HTML content separately
-            self.html_content = html_content
+            # Store HTML content separately (strip whitespace but keep content)
+            self.html_content = html_content.strip() if html_content else ""
             
             # Parse all support documents
             all_texts = []
@@ -528,10 +532,10 @@ Generate the test cases now:"""
                     }
             
             # Check if HTML content is available
-            if not self.html_content:
+            if not self.html_content or len(self.html_content.strip()) == 0:
                 return {
                     "status": "error",
-                    "message": "HTML content not found. Please upload HTML content in Phase 1.",
+                    "message": "HTML content not found. Please upload HTML content in Phase 1 and rebuild the knowledge base.",
                     "script": ""
                 }
             
@@ -681,16 +685,40 @@ Generate the complete Selenium script now:"""
             # Invoke the LLM to generate the script
             llm_response = self.llm.invoke(formatted_prompt)
             
-            # Handle response (could be string or object)
+            # Handle response (could be string or LangChain message object)
             if isinstance(llm_response, str):
                 script = llm_response
             else:
-                script = str(llm_response)
+                # Extract content from LangChain message object
+                if hasattr(llm_response, 'content'):
+                    script = llm_response.content
+                elif hasattr(llm_response, 'text'):
+                    script = llm_response.text
+                else:
+                    script = str(llm_response)
+            
+            # Convert literal \n to actual newlines
+            script = script.replace('\\n', '\n')
             
             # Clean up the script (remove markdown code blocks if present)
             script = re.sub(r'```python\s*', '', script)
             script = re.sub(r'```\s*', '', script)
             script = script.strip()
+            
+            # Remove any leading text before the actual script starts
+            # Look for common patterns like "Here's the complete script:" etc.
+            lines = script.split('\n')
+            script_start_idx = 0
+            for i, line in enumerate(lines):
+                # Skip lines that are clearly not code (explanatory text)
+                if any(phrase in line.lower() for phrase in ['here\'s', 'here is', 'complete script', 'selenium script']):
+                    continue
+                # If we find a line that looks like code (import, from, #, def, class, etc.)
+                if any(line.strip().startswith(keyword) for keyword in ['import', 'from', '#', 'def ', 'class ', 'try:', 'if ']):
+                    script_start_idx = i
+                    break
+            
+            script = '\n'.join(lines[script_start_idx:]).strip()
             
             # Extract script if it's wrapped in markdown
             if script.startswith('```'):
@@ -720,4 +748,3 @@ Generate the complete Selenium script now:"""
                 "script": "",
                 "test_case": test_case
             }
-
